@@ -75,9 +75,6 @@ again:
 	 * 1. Nothing happened between the first loop finish and the item lock.
 	 * 2. Someone has added a new item after the found one.
 	 * 3. Someone has removed the item that layed after the one we found.
-	 *
-	 * TODO: Consider an atomic replace possibility (remove current a and
-	 *       create a new with another value in another place).
 	 */
 	if (/* 1, 2 */ next->data >= data || /* 1, 3 */ next == root) {
 		new_item->next = next;

@@ -2,11 +2,11 @@
 
 all: run
 
-run: listdb.exe
-	./listdb.exe
+run: test.exe
+	./test.exe
 
-debug: listdb.exe
-	gdb --args ./listdb.exe
+debug: test.exe
+	gdb --args ./test.exe
 
-listdb.exe: main.c
-	clang main.c -o listdb.exe -lpthread
+test.exe: main.c
+	clang main.c -O3 -o test.exe -lpthread
