@@ -12,9 +12,6 @@ struct List {
 	struct List *_Atomic next;
 };
 
-/*
- * Locks the list item and returns pointer to the next item.
- */
 static struct List *list_aquire_item(struct List *item) {
 	struct List *expected_next = item->next;
 again:
@@ -22,16 +19,32 @@ again:
 		continue;
 	}
 	if (expected_next == NULL) {
-		/* Someone has locked the item, let's wait for it to free. */
+		/*
+		 * Someone has locked the item, let's wait for it to free.
+		 * TODO: This may probably be optimized - we can wait here
+		 * until the item->next is not NULL without the expensive
+		 * compare and exchange above. To be measured.
+		 */
 		expected_next = atomic_load(&item->next);
 		goto again;
 	}
 	return expected_next;
 }
 
-/*
- * Gives pointer to the next list item.
- */
+static void list_release_item(struct List *item, struct List *next) {
+	atomic_store(&item->next, next);
+}
+
+static struct List *list_item_new(LIST_DATA_T data, struct List *next) {
+	struct List *new_item = calloc(sizeof(*new_item), 1);
+	if (new_item == NULL) {
+		return NULL;
+	}
+	new_item->next = next;
+	new_item->data = data;
+	return new_item;
+}
+
 struct List *list_next(struct List *l) {
 	struct List *result = NULL;
 	while (result == NULL) {
@@ -40,25 +53,38 @@ struct List *list_next(struct List *l) {
 	return result;
 }
 
-/*
- * Sets the item's next (so unlocks it).
- */
-void list_release_item(struct List *item, struct List *next) {
-	atomic_store(&item->next, next);
-}
-
-/*
- * Inserts a new item with the given data after the given item.
- */
-struct List *list_insert_after(struct List *after, LIST_DATA_T data) {
-	struct List *new_item = calloc(sizeof(*new_item), 1);
-	if (new_item == NULL) {
-		return NULL;
+struct List *list_insert(struct List *root, LIST_DATA_T data) {
+	struct List *l = root;
+	struct List *next = list_next(l);
+again:
+	while (next != root && next->data < data) {
+		l = next;
+		next = list_next(l);
 	}
-	new_item->next = list_aquire_item(after);
-	new_item->data = data;
-	list_release_item(after, new_item);
-	return new_item;
+	next = list_aquire_item(l);
+	/*
+	 * We have several possibilities here:
+	 * 1. Nothing happened between the first loop finish and the item lock.
+	 * 2. Someone has added a new item after the found one.
+	 * 3. Someone has removed the item that layed after the one we found.
+	 *
+	 * TODO: Consider an atomic replace possibility (remove current a and
+	 *       create a new with another value in another place).
+	 */
+	if (/* 1, 2 */ next->data >= data || /* 1, 3 */ next == root) {
+		/* TODO: Allocate the new item outside of the lock. */
+		struct List *new_item = list_item_new(data, next);
+		list_release_item(l, new_item);
+		return next;
+	}
+	/*
+	 * We got here in case if someone has added a new item before we have
+	 * aquired the l item, and now l->next is not the lower bound anymore.
+	 *
+	 * So release the aquired item and continue.
+	 */
+	list_release_item(l, next);
+	goto again;
 }
 
 struct List *list_init(struct List *l) {
@@ -77,14 +103,15 @@ struct List *list_new() {
 
 void *writer(void *data) {
 	struct List *l = data;
-	for (int i = 0; i < 1000000; i++) {
-		list_insert_after(l, i);
+	for (int i = 0; i < 1000; i++) {
+		list_insert(l, rand());
 	}
 	return NULL;
 }
 
 int main() {
 	struct List *root = list_new();
+	/* Try to run a single thread and insert 16x items. */
 	pthread_t th[16];
 	for (size_t i = 0; i < (sizeof(th) / sizeof(th[0])); i++) {
 		pthread_create(&th[i], NULL, writer, root);
