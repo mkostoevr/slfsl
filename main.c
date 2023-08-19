@@ -42,13 +42,13 @@ static void list_release_item(struct List *item, struct List *next) {
 	atomic_store(&item->next, next);
 }
 
-static struct List *list_item_new(LIST_DATA_T data, struct List *next) {
+static struct List *list_item_new(LIST_DATA_T data) {
 	struct List *new_item = (struct List *)calloc(sizeof(*new_item), 1);
 	if (new_item == NULL) {
 		return NULL;
 	}
-	new_item->next = next;
 	new_item->data = data;
+	new_item->next = NULL;
 	return new_item;
 }
 
@@ -61,6 +61,7 @@ struct List *list_next(struct List *l) {
 }
 
 struct List *list_insert(struct List *root, LIST_DATA_T data) {
+	struct List *new_item = list_item_new(data);
 	struct List *l = root;
 	struct List *next = list_next(l);
 again:
@@ -79,8 +80,7 @@ again:
 	 *       create a new with another value in another place).
 	 */
 	if (/* 1, 2 */ next->data >= data || /* 1, 3 */ next == root) {
-		/* TODO: Allocate the new item outside of the lock. */
-		struct List *new_item = list_item_new(data, next);
+		new_item->next = next;
 		list_release_item(l, new_item);
 		return next;
 	}
