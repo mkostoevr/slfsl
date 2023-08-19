@@ -12,6 +12,11 @@ struct List {
 	struct List *_Atomic next;
 };
 
+struct List *list_new();
+struct List *list_init(struct List *l);
+struct List *list_insert(struct List *root, LIST_DATA_T data);
+struct List *list_next(struct List *l);
+
 static struct List *list_aquire_item(struct List *item) {
 	struct List *expected_next = item->next;
 again:
@@ -20,10 +25,12 @@ again:
 	}
 	if (expected_next == NULL) {
 		/*
-		 * Someone has locked the item, let's wait for it to free.
-		 * TODO: This may probably be optimized - we can wait here
-		 * until the item->next is not NULL without the expensive
-		 * compare and exchange above. To be measured.
+		 * Someone has locked the item, let's wait for it to free. As
+		 * for optimization we could wait here until the item->next is
+		 * not NULL without the expensive compare and exchange above.
+		 * But I don't have benchmarks confirming this assumption.
+		 *
+		 * TODO: Provide something stable and reproducible for this.
 		 */
 		expected_next = atomic_load(&item->next);
 		goto again;
@@ -36,7 +43,7 @@ static void list_release_item(struct List *item, struct List *next) {
 }
 
 static struct List *list_item_new(LIST_DATA_T data, struct List *next) {
-	struct List *new_item = calloc(sizeof(*new_item), 1);
+	struct List *new_item = (struct List *)calloc(sizeof(*new_item), 1);
 	if (new_item == NULL) {
 		return NULL;
 	}
@@ -93,7 +100,7 @@ struct List *list_init(struct List *l) {
 }
 
 struct List *list_new() {
-	struct List *l = calloc(sizeof(*l), 1);
+	struct List *l = (struct List *)calloc(sizeof(*l), 1);
 	if (l == NULL) {
 		return NULL;
 	}
@@ -102,8 +109,8 @@ struct List *list_new() {
 }
 
 void *writer(void *data) {
-	struct List *l = data;
-	for (int i = 0; i < 1000; i++) {
+	struct List *l = (struct List *)data;
+	for (int i = 0; i < 4000; i++) {
 		list_insert(l, rand());
 	}
 	return NULL;
