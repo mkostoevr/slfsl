@@ -2,6 +2,10 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include <limits.h>
+#include <assert.h>
+
+#define unreachable assert(0)
 
 #ifndef LIST_DATA_T
 #define LIST_DATA_T int
@@ -17,31 +21,6 @@ struct List *list_init(struct List *l);
 struct List *list_insert(struct List *root, LIST_DATA_T data);
 struct List *list_next(struct List *l);
 
-static struct List *list_aquire_item(struct List *item) {
-	struct List *expected_next = item->next;
-again:
-	while (!atomic_compare_exchange_strong(&item->next, &expected_next, NULL)) {
-		continue;
-	}
-	if (expected_next == NULL) {
-		/*
-		 * Someone has locked the item, let's wait for it to free. As
-		 * for optimization we could wait here until the item->next is
-		 * not NULL without the expensive compare and exchange above.
-		 * But I don't have benchmarks confirming this assumption.
-		 *
-		 * TODO: Provide something stable and reproducible for this.
-		 */
-		expected_next = atomic_load(&item->next);
-		goto again;
-	}
-	return expected_next;
-}
-
-static void list_release_item(struct List *item, struct List *next) {
-	atomic_store(&item->next, next);
-}
-
 static struct List *list_item_new(LIST_DATA_T data) {
 	struct List *new_item = (struct List *)calloc(sizeof(*new_item), 1);
 	if (new_item == NULL) {
@@ -52,43 +31,30 @@ static struct List *list_item_new(LIST_DATA_T data) {
 	return new_item;
 }
 
-struct List *list_next(struct List *l) {
-	struct List *result = NULL;
-	while (result == NULL) {
-		result = atomic_load(&l->next);
-	}
-	return result;
-}
-
 struct List *list_insert(struct List *root, LIST_DATA_T data) {
 	struct List *new_item = list_item_new(data);
 	struct List *l = root;
-	struct List *next = list_next(l);
-again:
-	while (next != root && next->data < data) {
-		l = next;
-		next = list_next(l);
-	}
-	next = list_aquire_item(l);
-	/*
-	 * We have several possibilities here:
-	 * 1. Nothing happened between the first loop finish and the item lock.
-	 * 2. Someone has added a new item after the found one.
-	 * 3. Someone has removed the item that layed after the one we found.
-	 */
-	if (/* 1, 2 */ next->data >= data || /* 1, 3 */ next == root) {
+	struct List *next = l->next;
+
+	for (;;) {
+		while (next != root && next->data < data) {
+			l = next;
+			next = l->next;
+		}
 		new_item->next = next;
-		list_release_item(l, new_item);
-		return next;
+		/* FIXME: ABA-vulnerable. */
+		if (!atomic_compare_exchange_strong(&l->next, &next, new_item)) {
+			/*
+			 * a) Someone has added a new item after l.
+			 * b) Someone has removed the l->next.
+			 */
+			continue;
+		}
+		/* We have successfully inserted the new item. */
+		return new_item;
 	}
-	/*
-	 * We got here in case if someone has added a new item before we have
-	 * aquired the l item, and now l->next is not the lower bound anymore.
-	 *
-	 * So release the aquired item and continue.
-	 */
-	list_release_item(l, next);
-	goto again;
+	unreachable;
+	return root;
 }
 
 struct List *list_init(struct List *l) {
@@ -124,7 +90,10 @@ int main() {
 		pthread_join(th[i], NULL);
 	}
 	size_t count = 0;
-	for (struct List *it = root->next; it != root; it = list_next(it)) {
+	int prev = INT_MIN;
+	for (struct List *it = root->next; it != root; it = it->next) {
+		assert(it->data >= prev);
+		prev = it->data;
 		count++;
 	}
 	printf("Item count: %zu\n", count);
