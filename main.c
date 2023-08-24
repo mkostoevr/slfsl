@@ -37,6 +37,8 @@ static struct List *list_item_new(LIST_DATA_T data) {
 	return new_item;
 }
 
+_Atomic size_t collisions = 0;
+
 struct List *list_insert(struct List *root, LIST_DATA_T data) {
 	struct List *new_item = list_item_new(data);
 	struct List *l = root;
@@ -54,6 +56,7 @@ struct List *list_insert(struct List *root, LIST_DATA_T data) {
 		new_atom.meta++;
 		new_atom.next = new_item;
 		if (!atomic_compare_exchange_strong(&l->atom, &atom, new_atom)) {
+			collisions++;
 			/*
 			 * Someone has updated the l->atom (changed its next
 			 * pointer). TODO: Or removed the l itself.
@@ -90,7 +93,7 @@ struct List *list_next(struct List *l) {
 void *writer(void *data) {
 	struct List *l = (struct List *)data;
 	for (int i = 0; i < 4000; i++) {
-		list_insert(l, rand());
+		list_insert(l, rand() % 3);
 	}
 	return NULL;
 }
@@ -113,4 +116,5 @@ int main() {
 		count++;
 	}
 	printf("Item count: %zu\n", count);
+	printf("Collisions: %zu\n", collisions);
 }
