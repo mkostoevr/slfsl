@@ -9,4 +9,4 @@ debug: test.exe
 	gdb --args ./test.exe
 
 test.exe: main.c
-	clang main.c -O3 -o test.exe -lpthread
+	clang main.c -O3 -o test.exe -lpthread -mcx16

@@ -11,9 +11,16 @@
 #define LIST_DATA_T int
 #endif
 
+struct List;
+
+struct Atom {
+	size_t meta;
+	struct List *next;
+};
+
 struct List {
 	LIST_DATA_T data;
-	struct List *_Atomic next;
+	_Atomic struct Atom atom;
 };
 
 struct List *list_new();
@@ -27,26 +34,29 @@ static struct List *list_item_new(LIST_DATA_T data) {
 		return NULL;
 	}
 	new_item->data = data;
-	new_item->next = NULL;
 	return new_item;
 }
 
 struct List *list_insert(struct List *root, LIST_DATA_T data) {
 	struct List *new_item = list_item_new(data);
 	struct List *l = root;
-	struct List *next = l->next;
+	struct Atom atom = l->atom;
+	struct Atom new_atom = {};
 
 	for (;;) {
-		while (next != root && next->data < data) {
-			l = next;
-			next = l->next;
+		/* TODO: Aliveness check. */
+		while (atom.next != root && atom.next->data < data) {
+			l = atom.next;
+			atom = l->atom;
 		}
-		new_item->next = next;
-		/* FIXME: ABA-vulnerable. */
-		if (!atomic_compare_exchange_strong(&l->next, &next, new_item)) {
+		new_item->atom = (struct Atom){0, atom.next};
+		new_atom = atom;
+		new_atom.meta++;
+		new_atom.next = new_item;
+		if (!atomic_compare_exchange_strong(&l->atom, &atom, new_atom)) {
 			/*
-			 * a) Someone has added a new item after l.
-			 * b) Someone has removed the l->next.
+			 * Someone has updated the l->atom (changed its next
+			 * pointer). TODO: Or removed the l itself.
 			 */
 			continue;
 		}
@@ -58,7 +68,7 @@ struct List *list_insert(struct List *root, LIST_DATA_T data) {
 }
 
 struct List *list_init(struct List *l) {
-	l->next = l;
+	l->atom = (struct Atom){0, l};
 	return l;
 }
 
@@ -69,6 +79,11 @@ struct List *list_new() {
 	}
 	list_init(l);
 	return l;
+}
+
+struct List *list_next(struct List *l) {
+	struct Atom tmp = atomic_load(&l->atom);
+	return tmp.next;
 }
 
 void *writer(void *data) {
@@ -91,7 +106,7 @@ int main() {
 	}
 	size_t count = 0;
 	int prev = INT_MIN;
-	for (struct List *it = root->next; it != root; it = it->next) {
+	for (struct List *it = list_next(root); it != root; it = list_next(it)) {
 		assert(it->data >= prev);
 		prev = it->data;
 		count++;
