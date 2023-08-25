@@ -64,6 +64,7 @@ struct List *list_insert(struct List *root, LIST_DATA_T data) {
 		return new_item;
 	}
 	unreachable;
+	free(new_item);
 	return root;
 }
 
