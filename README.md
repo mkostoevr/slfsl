@@ -12,5 +12,5 @@ Educational project for creating concurrent and transactional in-memory data str
 ### Sorted list
 
 - [x] Insertion.
-- [ ] Deletion.
+- [x] Deletion.
 - [ ] Transactions.
