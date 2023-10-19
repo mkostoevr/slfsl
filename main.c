@@ -42,13 +42,16 @@ static struct {
 	_Atomic size_t insert_collision;
 	_Atomic size_t insert_after_dropped;
 	_Atomic size_t insert_wait_for_unlink;
+	_Atomic size_t drop_got_to_root;
 	_Atomic size_t drop_next_is_unlinking_set_fail;
 	_Atomic size_t drop_mark_collision;
 	_Atomic size_t drop_after_dropped;
+	_Atomic size_t drop_wait_for_unlink;
 	_Atomic size_t drop_mark_dropped;
 	_Atomic size_t drop_mark_unlinking;
 	_Atomic size_t drop_unexisting;
 	_Atomic size_t drop_collision;
+	_Atomic size_t drop_lower_bound_miss;
 } counters;
 
 struct List *list_insert(struct List *root, LIST_DATA_T data) {
@@ -75,9 +78,9 @@ struct List *list_insert(struct List *root, LIST_DATA_T data) {
 			 * The item we are currently on has been dropped:
 			 * restart.
 			 */
-			counters.insert_after_dropped++;
 			l = root;
 			atom = l->atom;
+			counters.insert_after_dropped++;
 			continue;
 		}
 		if (atom.meta & LIST_RELINKING) {
@@ -85,8 +88,8 @@ struct List *list_insert(struct List *root, LIST_DATA_T data) {
 			 * The next item has been dropped: wait until it will
 			 * be unlinked.
 			 */
-			counters.insert_wait_for_unlink++;
 			atom = l->atom;
+			counters.insert_wait_for_unlink++;
 			continue;
 		}
 		new_item->atom = (struct Atom){0, atom.next};
@@ -94,11 +97,11 @@ struct List *list_insert(struct List *root, LIST_DATA_T data) {
 		new_atom.meta++;
 		new_atom.next = new_item;
 		if (!atomic_compare_exchange_strong(&l->atom, &atom, new_atom)) {
-			counters.insert_collision++;
 			/*
 			 * Someone has updated the l->atom (changed its next
-			 * pointer). TODO: Or removed the l itself.
+			 * pointer or removed the l itself).
 			 */
+			counters.insert_collision++;
 			continue;
 		}
 		/* We have successfully inserted the new item. */
@@ -123,6 +126,7 @@ int list_drop(struct List *root, LIST_DATA_T value)
 	recheck_atom:
 		if (atom.next == root) {
 			/* The item to drop has been dropped by someone else. */
+			counters.drop_got_to_root++;
 			return 0;
 		}
 		if (atom.meta & LIST_DROPPED) {
@@ -148,6 +152,7 @@ int list_drop(struct List *root, LIST_DATA_T value)
 		if (atom.meta & LIST_RELINKING) {
 			/* Wait until the next item will be unlinked. */
 			atom = l->atom;
+			counters.drop_wait_for_unlink++;
 			goto recheck_atom;
 		}
 		if (atom.next->data > value) {
@@ -190,8 +195,8 @@ int list_drop(struct List *root, LIST_DATA_T value)
 				 * it nor insert after the current or the next
 				 * item).
 				 */
-				counters.drop_mark_dropped++;
 				unreachable;
+				counters.drop_mark_dropped++;
 				return 0;
 			}
 			if (next_atom.meta & LIST_RELINKING) {
@@ -199,8 +204,8 @@ int list_drop(struct List *root, LIST_DATA_T value)
 				 * Wait until the next's next item will be
 				 * unlinked.
 				 */
-				counters.drop_mark_unlinking++;
 				next_atom = atom.next->atom;
+				counters.drop_mark_unlinking++;
 				goto recheck_next_atom;
 			}
 			struct Atom new_next_atom = { (next_atom.meta + 1) | LIST_DROPPED, NULL };
@@ -220,8 +225,8 @@ int list_drop(struct List *root, LIST_DATA_T value)
 				 * is locked above by setting the LIST_UNLINKING
 				 * flag.
 				 */
-				counters.drop_collision++;
 				unreachable;
+				counters.drop_collision++;
 				return 0;
 			}
 			/* TODO: Free the dropped item. */
@@ -230,6 +235,7 @@ int list_drop(struct List *root, LIST_DATA_T value)
 		/*
 		 * The l->atom.next is not the lower bound anymore, go find it.
 		 */
+		counters.drop_lower_bound_miss++;
 		continue;
 	}
 	unreachable;
@@ -362,11 +368,14 @@ int main() {
 	printf("Insert collisions: %zu\n", counters.insert_collision);
 	printf("Insert after dropped: %zu\n", counters.insert_after_dropped);
 	printf("Insert wait for unlink: %zu\n", counters.insert_wait_for_unlink);
+	printf("Drop got to root: %zu\n", counters.drop_got_to_root);
 	printf("Drop mark collisions: %zu\n", counters.drop_mark_collision);
 	printf("Drop mark unlinking attempts: %zu\n", counters.drop_mark_unlinking);
 	printf("Drop after dropped attempts: %zu\n", counters.drop_after_dropped);
+	printf("Drop wait for unlink: %zu\n", counters.drop_wait_for_unlink);
 	printf("Drop unexisting attempts: %zu\n", counters.drop_unexisting);
 	printf("Drop next is unlinking set fail: %zu\n", counters.drop_next_is_unlinking_set_fail);
+	printf("Drop lower bound miss: %zu\n", counters.drop_lower_bound_miss);
 	printf("Drop mark dropped attempts (should be 0): %zu\n", counters.drop_mark_dropped);
 	printf("Drop collisions (should be 0): %zu\n", counters.drop_collision);
 }
