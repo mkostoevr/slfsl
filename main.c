@@ -278,15 +278,17 @@ uint32_t rand_data_internal() {
 	return state = (uint64_t)state * 279470273u % 0xfffffffb;
 }
 
+static uint32_t random_data[INSERT_COUNT];
+
+void rand_data_init() {
+	for (size_t i = 0; i < INSERT_COUNT; i++) {
+		random_data[i] = rand_data_internal();
+	}
+}
+
 uint32_t rand_data() {
-	static uint32_t random_data[INSERT_COUNT];
 	static _Atomic uint32_t idx_next = 0;
 	uint32_t idx = atomic_fetch_add_explicit(&idx_next, 1, memory_order_relaxed);
-	if (idx == 0) {
-		for (size_t i = 0; i < INSERT_COUNT; i++) {
-			random_data[i] = rand_data_internal();
-		}
-	}
 	if (idx >= INSERT_COUNT) {
 		printf("INTERNAL ERROR: More writes than expected.\n");
 		exit(1);
@@ -332,6 +334,7 @@ redo:
 }
 
 int main() {
+	rand_data_init();
 	struct List *root = list_new();
 	pthread_t twriter[WRITER_COUNT];
 	pthread_t tdropper[DROPPER_COUNT];
