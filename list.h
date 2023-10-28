@@ -4,6 +4,10 @@
 
 #define unreachable assert(0)
 
+#ifndef LIST_DATA_COMPARE_F
+#define LIST_DATA_COMPARE_F(a, b) (a - b)
+#endif
+
 #ifndef LIST_DATA_T
 #define LIST_DATA_T int
 #endif
@@ -66,7 +70,8 @@ struct List *list_insert(struct List *root, LIST_DATA_T data) {
 		 *       5. ?
 		 */
 		while (atom.next != root && !(atom.meta & LIST_DROPPED) &&
-		       !(atom.meta & LIST_RELINKING) && atom.next->data < data) {
+		       !(atom.meta & LIST_RELINKING) &&
+		       LIST_DATA_COMPARE_F(atom.next->data, data) < 0) {
 			l = atom.next;
 			atom = l->atom;
 		}
@@ -116,7 +121,8 @@ int list_drop(struct List *root, LIST_DATA_T value)
 
 	for (;;) {
 		while (atom.next != root && !(atom.meta & LIST_DROPPED) &&
-		       !(atom.meta & LIST_RELINKING) && atom.next->data < value) {
+		       !(atom.meta & LIST_RELINKING) &&
+		       LIST_DATA_COMPARE_F(atom.next->data, value) < 0) {
 			l = atom.next;
 			atom = l->atom;
 		}
@@ -152,7 +158,7 @@ int list_drop(struct List *root, LIST_DATA_T value)
 			counters.drop_wait_for_unlink++;
 			goto recheck_atom;
 		}
-		if (atom.next->data > value) {
+		if (LIST_DATA_COMPARE_F(atom.next->data, value) > 0) {
 			/*
 			 * The item either did not exist or was dropped by
 			 * soneone else.
@@ -160,7 +166,7 @@ int list_drop(struct List *root, LIST_DATA_T value)
 			counters.drop_unexisting++;
 			return 0;
 		}
-		if (atom.next->data == value) {
+		if (LIST_DATA_COMPARE_F(atom.next->data, value) == 0) {
 			/*
 			 * Mark that the next item is going to be
 			 * unlinked in the future. Since then no one is
@@ -269,6 +275,7 @@ struct List *list_next(struct List *root, struct List *it) {
 	return atom.next;
 }
 
+#undef LIST_DATA_COMPARE_F
 #undef LIST_DATA_T
 #undef LIST_DROPPED
 #undef LIST_RELINKING
