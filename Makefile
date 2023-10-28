@@ -1,12 +1,12 @@
 .PHONY: all run
 
-all: run
+all: test
 
-run: test.exe
-	./test.exe
+test: test/list.exe
+	test/list.exe
 
-debug: test.exe
-	gdb --args ./test.exe
+debug: test/list.exe
+	gdb --args $<
 
-test.exe: main.c
-	clang main.c -O3 -o test.exe -lpthread -mcx16
+test/list.exe: test/list.c list.h
+	clang $< -O3 -o $@ -lpthread -mcx16
