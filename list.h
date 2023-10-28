@@ -62,13 +62,6 @@ struct List *list_insert(struct List *root, LIST_DATA_T data) {
 	struct Atom new_atom = {};
 
 	for (;;) {
-		/* TODO: 1. We got to node.
-		 *       2. The node is deleted.
-		 *       3. The we go next.
-		 *       4. Between 2 and 3 soneone has added the node that
-		 *          satisfies our requirements.
-		 *       5. ?
-		 */
 		while (atom.next != root && !(atom.meta & LIST_DROPPED) &&
 		       !(atom.meta & LIST_RELINKING) &&
 		       LIST_DATA_COMPARE_F(atom.next->data, data) < 0) {
@@ -134,18 +127,28 @@ int list_drop(struct List *root, LIST_DATA_T value)
 		}
 		if (atom.meta & LIST_DROPPED) {
 			/*
-			 * The item we are cucrently on has been dropped. This
-			 * is a rare case, so let's just restart. We can't
-			 * continue, because it could happen that someone added
-			 * a new item just before the l->atom.next, so we could
-			 * have found it if we would just start from the
-			 * beginning.
+			 * The item we are currently on has been dropped. Now we
+			 * have two ways to go: we can restart the list scan or
+			 * try to continue over the dropped item. In the second
+			 * option we can have the following scenarios:
 			 *
-			 * TODO: This is not a legal behaviour for a database
-			 *       though, but let's make it this way for now.
+			 * a. We just jump over the dropped item and coninue.
+			 *    In this case we can miss the items that had been
+			 *    inserted between the previous one and the one we
+			 *    have jumped to.
+			 * b. We jump to another dropped item. Everything above
+			 *    can be applied recursively.
 			 *
-			 * XXX: Think more over this consequences: any more
-			 *      reasons we can not continue?
+			 * So the only problem of the second approach is that
+			 * we can miss the item that had been inserted about
+			 * the same time we got to the dropped item.
+			 *
+			 * But this requires the item to never free, othervice
+			 * we're going to get the use-after-free with undefined
+			 * consequences.
+			 *
+			 * So since we lack any kind of memory management for
+			 * now let's just restart, it's a rare case anyway.
 			 */
 			l = root;
 			atom = l->atom;
