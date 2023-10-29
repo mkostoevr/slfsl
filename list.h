@@ -12,13 +12,12 @@
 #define LIST_DATA_T int
 #endif
 
-#define LIST_DROPPED   (1ULL << 63)
-#define LIST_RELINKING (1ULL << 62)
-
 struct List;
 
 struct Atom {
-	size_t meta;
+	uint64_t dropped: 1,
+		 relinking: 1,
+		 updcount: 62;
 	struct List *next;
 };
 
@@ -62,13 +61,12 @@ struct List *list_insert(struct List *root, LIST_DATA_T data) {
 	struct Atom new_atom = {};
 
 	for (;;) {
-		while (atom.next != root && !(atom.meta & LIST_DROPPED) &&
-		       !(atom.meta & LIST_RELINKING) &&
+		while (atom.next != root && !atom.dropped && !atom.relinking &&
 		       LIST_DATA_COMPARE_F(atom.next->data, data) < 0) {
 			l = atom.next;
 			atom = l->atom;
 		}
-		if (atom.meta & LIST_DROPPED) {
+		if (atom.dropped) {
 			/*
 			 * The item we are currently on has been dropped:
 			 * restart.
@@ -78,7 +76,7 @@ struct List *list_insert(struct List *root, LIST_DATA_T data) {
 			counters.insert_after_dropped++;
 			continue;
 		}
-		if (atom.meta & LIST_RELINKING) {
+		if (atom.relinking) {
 			/*
 			 * The next item has been dropped: wait until it will
 			 * be unlinked.
@@ -87,9 +85,9 @@ struct List *list_insert(struct List *root, LIST_DATA_T data) {
 			counters.insert_wait_for_unlink++;
 			continue;
 		}
-		new_item->atom = (struct Atom){0, atom.next};
+		new_item->atom = (struct Atom){ .next = atom.next };
 		new_atom = atom;
-		new_atom.meta++;
+		new_atom.updcount++;
 		new_atom.next = new_item;
 		if (!atomic_compare_exchange_strong(&l->atom, &atom, new_atom)) {
 			/*
@@ -113,8 +111,7 @@ int list_drop(struct List *root, LIST_DATA_T value)
 	struct Atom atom = l->atom;
 
 	for (;;) {
-		while (atom.next != root && !(atom.meta & LIST_DROPPED) &&
-		       !(atom.meta & LIST_RELINKING) &&
+		while (atom.next != root && !atom.dropped && !atom.relinking &&
 		       LIST_DATA_COMPARE_F(atom.next->data, value) < 0) {
 			l = atom.next;
 			atom = l->atom;
@@ -125,7 +122,7 @@ int list_drop(struct List *root, LIST_DATA_T value)
 			counters.drop_got_to_root++;
 			return 0;
 		}
-		if (atom.meta & LIST_DROPPED) {
+		if (atom.dropped) {
 			/*
 			 * The item we are currently on has been dropped. Now we
 			 * have two ways to go: we can restart the list scan or
@@ -155,7 +152,7 @@ int list_drop(struct List *root, LIST_DATA_T value)
 			counters.drop_after_dropped++;
 			continue;
 		}
-		if (atom.meta & LIST_RELINKING) {
+		if (atom.relinking) {
 			/* Wait until the next item will be unlinked. */
 			atom = l->atom;
 			counters.drop_wait_for_unlink++;
@@ -176,7 +173,11 @@ int list_drop(struct List *root, LIST_DATA_T value)
 			 * able to get to the next item from the current
 			 * one.
 			 */
-			struct Atom intermediate_atom = { (atom.meta + 1) | LIST_RELINKING, atom.next };
+			struct Atom intermediate_atom = {
+				.relinking = 1,
+				.updcount = atom.updcount + 1,
+				.next = atom.next
+			};
 			if (!atomic_compare_exchange_strong(&l->atom, &atom, intermediate_atom)) {
 				/*
 				 * Someone has changed the current item
@@ -192,7 +193,7 @@ int list_drop(struct List *root, LIST_DATA_T value)
 			/* Mark the next item as dropped. */
 			struct Atom next_atom = atom.next->atom;
 		recheck_next_atom:
-			if (next_atom.meta & LIST_DROPPED) {
+			if (next_atom.dropped) {
 				/*
 				 * No one can drop the item because it belongs
 				 * to the current item, which was locked above
@@ -205,7 +206,7 @@ int list_drop(struct List *root, LIST_DATA_T value)
 				counters.drop_mark_dropped++;
 				return 0;
 			}
-			if (next_atom.meta & LIST_RELINKING) {
+			if (next_atom.relinking) {
 				/*
 				 * Wait until the next's next item will be
 				 * unlinked.
@@ -214,7 +215,11 @@ int list_drop(struct List *root, LIST_DATA_T value)
 				counters.drop_mark_unlinking++;
 				goto recheck_next_atom;
 			}
-			struct Atom new_next_atom = { (next_atom.meta + 1) | LIST_DROPPED, NULL };
+			struct Atom new_next_atom = {
+				.dropped = 1,
+				.updcount = next_atom.updcount + 1,
+				.next = NULL
+			};
 			struct List *new_next = next_atom.next;
 			if (!atomic_compare_exchange_strong(&atom.next->atom, &next_atom, new_next_atom)) {
 				counters.drop_mark_collision++;
@@ -224,7 +229,11 @@ int list_drop(struct List *root, LIST_DATA_T value)
 			 * Now the item is dropped, no one can use it, let's
 			 * drop the reference to it from its parent.
 			 */
-			struct Atom new_atom = { (intermediate_atom.meta + 1) & (~LIST_RELINKING), new_next };
+			struct Atom new_atom = {
+				.relinking = 0,
+				.updcount = intermediate_atom.updcount + 1,
+				.next = new_next
+			};
 			if (!atomic_compare_exchange_strong(&l->atom, &intermediate_atom, new_atom)) {
 				/*
 				 * This should not be possible, the current item
@@ -249,7 +258,7 @@ int list_drop(struct List *root, LIST_DATA_T value)
 }
 
 struct List *list_init(struct List *l) {
-	l->atom = (struct Atom){0, l};
+	l->atom = (struct Atom){ .next = l };
 	return l;
 }
 
@@ -266,14 +275,14 @@ struct List *list_next(struct List *root, struct List *it) {
 	do {
 	reload:
 		atom = atomic_load(atom_ptr);
-		if (atom.meta & LIST_DROPPED) {
+		if (atom.dropped) {
 			/* TODO: Find the lower bound instead. */
 			atom_ptr = &root->atom;
 			goto reload;
 		}
-	} while (atom.meta & LIST_RELINKING);
-	assert(!(atom.meta & LIST_DROPPED));
-	assert(!(atom.meta & LIST_RELINKING));
+	} while (atom.relinking);
+	assert(!atom.dropped);
+	assert(!atom.relinking);
 	assert(atom.next != 0);
 	return atom.next;
 }
