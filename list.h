@@ -15,9 +15,10 @@
 struct List;
 
 struct Atom {
-	uint64_t dropped: 1,
-		 relinking: 1,
-		 updcount: 62;
+	uint64_t relinking: 1,
+		 writelock: 1,
+		 refcount: 32, /* Concurrent reader count. */
+		 updcount: 30; /* ABA workaround. */
 	struct List *next;
 };
 
@@ -54,6 +55,53 @@ static struct {
 	_Atomic size_t drop_lower_bound_miss;
 } counters;
 
+static void list_ref_read(struct List *l) {
+	struct Atom atom = l->atom;
+again:
+	/* Do not read the item while there's a waiting writer. */
+	while (atom.writelock) {
+		atom = l->atom;
+	}
+	assert(!atom.writelock);
+	assert(!atom.relinking);
+	struct Atom new_atom = {
+		.refcount = atom.refcount + 1,
+		.updcount = atom.updcount,
+		.next = atom.next
+	};
+	if (!atomic_compare_exchange_strong(&l->atom, &atom, new_atom)) {
+		/* Somone has refed the item or locked it for modification. */
+		goto again;
+	}
+}
+
+static void list_unref_read(struct List *l) {
+	struct Atom atom = l->atom;
+	struct Atom new_atom = {};
+	assert(!atom.relinking);
+	do {
+		new_atom = {
+			/* Comeone can be waiting to modify the item. */
+			.writelock = atom.writelock,
+			.refcount = atom.refcount - 1,
+			.updcount = atom.updcount,
+			.next = atom.next
+		};
+	} while (!atomic_compare_exchange_strong(&l->atom, &atom, new_atom));
+}
+
+static struct List *list_atom_next(struct List *l, struct Atom *atom) {
+	struct List *next = atom->next;
+	list_ref_read(next);
+	list_unref_read(l);
+	*atom = next->atom;
+	return next;
+}
+
+static void list_ref_write(struct List *l) {
+	
+}
+
 struct List *list_insert(struct List *root, LIST_DATA_T data) {
 	struct List *new_item = list_item_new(data);
 	struct List *l = root;
@@ -61,29 +109,8 @@ struct List *list_insert(struct List *root, LIST_DATA_T data) {
 	struct Atom new_atom = {};
 
 	for (;;) {
-		while (atom.next != root && !atom.dropped && !atom.relinking &&
-		       LIST_DATA_COMPARE_F(atom.next->data, data) < 0) {
-			l = atom.next;
-			atom = l->atom;
-		}
-		if (atom.dropped) {
-			/*
-			 * The item we are currently on has been dropped:
-			 * restart.
-			 */
-			l = root;
-			atom = l->atom;
-			counters.insert_after_dropped++;
-			continue;
-		}
-		if (atom.relinking) {
-			/*
-			 * The next item has been dropped: wait until it will
-			 * be unlinked.
-			 */
-			atom = l->atom;
-			counters.insert_wait_for_unlink++;
-			continue;
+		while (atom.next != root && LIST_DATA_COMPARE_F(atom.next->data, data) < 0) {
+			l = list_atom_next(l, &atom);
 		}
 		new_item->atom = (struct Atom){ .next = atom.next };
 		new_atom = atom;
@@ -267,24 +294,6 @@ struct List *list_new() {
 	assert(l != NULL);
 	list_init(l);
 	return l;
-}
-
-struct List *list_next(struct List *root, struct List *it) {
-	_Atomic struct Atom *atom_ptr = &it->atom;
-	struct Atom atom;
-	do {
-	reload:
-		atom = atomic_load(atom_ptr);
-		if (atom.dropped) {
-			/* TODO: Find the lower bound instead. */
-			atom_ptr = &root->atom;
-			goto reload;
-		}
-	} while (atom.relinking);
-	assert(!atom.dropped);
-	assert(!atom.relinking);
-	assert(atom.next != 0);
-	return atom.next;
 }
 
 #undef LIST_DATA_COMPARE_F
